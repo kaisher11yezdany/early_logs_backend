@@ -1,8 +1,10 @@
 const express = require('express');
+const path = require('path');
 const router = express.Router();
 const Student = require('../models/Student');
 const User = require('../models/User');
 const { protect, authorize } = require('../middleware/auth');
+const { uploadFields } = require('../middleware/upload');
 
 // GET all students
 router.get('/', protect, async (req, res) => {
@@ -107,6 +109,36 @@ router.put('/:id', protect, authorize('admin', 'teacher'), async (req, res) => {
       .populate('class', 'name section');
 
     res.json({ success: true, message: 'Student updated successfully', student: updated });
+  } catch (error) {
+    res.status(500).json({ success: false, message: error.message });
+  }
+});
+
+// POST upload documents for a student
+router.post('/:id/uploads', protect, authorize('admin'), uploadFields, async (req, res) => {
+  try {
+    const student = await Student.findById(req.params.id);
+    if (!student) return res.status(404).json({ success: false, message: 'Student not found' });
+
+    const fields = ['studentAadhar', 'fatherAadhar', 'motherAadhar', 'guardianAadhar', 'transferCertificate'];
+    const updates = {};
+
+    fields.forEach(field => {
+      if (req.files?.[field]?.[0]) {
+        const f = req.files[field][0];
+        updates[`documentUploads.${field}`] = {
+          filename:     f.filename,
+          originalName: f.originalname,
+          mimetype:     f.mimetype
+        };
+      }
+    });
+
+    if (Object.keys(updates).length === 0)
+      return res.status(400).json({ success: false, message: 'No files uploaded' });
+
+    const updated = await Student.findByIdAndUpdate(req.params.id, updates, { new: true });
+    res.json({ success: true, message: 'Documents uploaded successfully', documentUploads: updated.documentUploads });
   } catch (error) {
     res.status(500).json({ success: false, message: error.message });
   }

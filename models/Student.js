@@ -57,7 +57,13 @@ const studentSchema = new mongoose.Schema({
       email:         String,
       phone:         String
     },
-    guardianSignature: String
+    guardianSignature: String,
+    guardian: {
+      name:     String,
+      relation: String,
+      aadharNo: String,
+      phone:    String
+    }
   },
   parentUser: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
 
@@ -99,6 +105,15 @@ const studentSchema = new mongoose.Schema({
     timeOfEnrolment:   String,
     dayOfEnrolment:    String,
     documentSubmitted: String
+  },
+
+  // ── Uploaded Document Files ───────────────────────────────────────────────
+  documentUploads: {
+    studentAadhar:       { filename: String, originalName: String, mimetype: String },
+    fatherAadhar:        { filename: String, originalName: String, mimetype: String },
+    motherAadhar:        { filename: String, originalName: String, mimetype: String },
+    guardianAadhar:      { filename: String, originalName: String, mimetype: String },
+    transferCertificate: { filename: String, originalName: String, mimetype: String },
   },
 
   // ── Meta ──────────────────────────────────────────────────────────────────

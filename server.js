@@ -1,22 +1,39 @@
 const express = require('express');
 const cors = require('cors');
+const path = require('path');
+const fs = require('fs');
 const dotenv = require('dotenv');
 const connectDB = require('./config/db');
 
 dotenv.config();
 
+// Ensure uploads directory exists at startup
+const uploadsDir = path.join(__dirname, 'uploads');
+if (!fs.existsSync(uploadsDir)) fs.mkdirSync(uploadsDir, { recursive: true });
+
 const app = express();
 
 // Middleware
-const allowedOrigins = [
-  'http://localhost:5173',
-  'http://127.0.0.1:5173',
-  process.env.FRONTEND_URL,        // set this in Render env vars after Vercel deploy
-].filter(Boolean);
-
-app.use(cors({ origin: allowedOrigins, credentials: true }));
+app.use(cors({
+  origin: (origin, callback) => {
+    // Allow requests with no origin (mobile apps, curl, Postman)
+    if (!origin) return callback(null, true);
+    const allowed =
+      origin.endsWith('.vercel.app') ||
+      origin.endsWith('.railway.app') ||
+      origin === 'http://localhost:5173' ||
+      origin === 'http://127.0.0.1:5173' ||
+      origin === process.env.FRONTEND_URL;
+    if (allowed) return callback(null, true);
+    callback(new Error(`CORS blocked: ${origin}`));
+  },
+  credentials: true
+}));
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
+
+// Serve uploaded documents
+app.use('/uploads', express.static(path.join(__dirname, 'uploads')));
 
 // Routes
 app.use('/api/auth', require('./routes/auth'));
@@ -28,6 +45,7 @@ app.use('/api/assignments', require('./routes/assignments'));
 app.use('/api/fees', require('./routes/fees'));
 app.use('/api/notices', require('./routes/notices'));
 app.use('/api/exams', require('./routes/exams'));
+app.use('/api/timetable', require('./routes/timetable'));
 
 // Health check
 app.get('/api/health', (req, res) => {
