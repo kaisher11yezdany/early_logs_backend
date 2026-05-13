@@ -1,71 +1,163 @@
 const express = require('express');
-const router = express.Router();
-const { FeeStructure, Payment } = require('../models/Fee');
+const router  = express.Router();
+const { FeeStructure, StudentFee } = require('../models/Fee');
 const Student = require('../models/Student');
 const { protect, authorize } = require('../middleware/auth');
 
-// --- Fee Structure ---
+// ── Fee Structure (per class) ─────────────────────────────────────────────────
+
+// GET /fees/structure?year=2025-2026
 router.get('/structure', protect, async (req, res) => {
   try {
-    const structures = await FeeStructure.find().populate('class', 'name section');
+    const query = req.query.year ? { academicYear: req.query.year } : {};
+    const structures = await FeeStructure.find(query)
+      .populate('class', 'name section')
+      .sort({ createdAt: 1 });
     res.json({ success: true, structures });
-  } catch (error) {
-    res.status(500).json({ success: false, message: error.message });
+  } catch (err) {
+    res.status(500).json({ success: false, message: err.message });
   }
 });
 
-router.post('/structure', protect, authorize('admin', 'accountant'), async (req, res) => {
+// PUT /fees/structure/:classId  (upsert)
+router.put('/structure/:classId', protect, authorize('admin', 'accountant'), async (req, res) => {
   try {
-    const structure = await FeeStructure.create(req.body);
-    res.status(201).json({ success: true, structure });
-  } catch (error) {
-    res.status(500).json({ success: false, message: error.message });
+    const { academicYear, totalAmount, description } = req.body;
+    const structure = await FeeStructure.findOneAndUpdate(
+      { class: req.params.classId, academicYear },
+      { class: req.params.classId, academicYear, totalAmount, description },
+      { new: true, upsert: true, runValidators: false }
+    ).populate('class', 'name section');
+    res.json({ success: true, structure });
+  } catch (err) {
+    res.status(500).json({ success: false, message: err.message });
   }
 });
 
-// --- Payments ---
-router.get('/payments', protect, authorize('admin', 'accountant'), async (req, res) => {
+// ── Student Fees ──────────────────────────────────────────────────────────────
+
+// POST /fees/students/initialize  — must be before /:studentId routes
+// Creates a StudentFee record for every student in a class (skips existing ones)
+router.post('/students/initialize', protect, authorize('admin'), async (req, res) => {
   try {
-    const { studentId, status, month } = req.query;
-    let query = {};
-    if (studentId) query.student = studentId;
-    if (status) query.status = status;
-    if (month) query.month = { $regex: month, $options: 'i' };
-    const payments = await Payment.find(query)
-      .populate({ path: 'student', populate: { path: 'user', select: 'name email' } })
-      .sort({ createdAt: -1 });
-    res.json({ success: true, payments });
-  } catch (error) {
-    res.status(500).json({ success: false, message: error.message });
+    const { classId, academicYear } = req.body;
+    const structure = await FeeStructure.findOne({ class: classId, academicYear });
+    if (!structure)
+      return res.status(400).json({ success: false, message: 'Set the total fee for this class first.' });
+
+    const students = await Student.find({ class: classId, academicYear, isActive: true });
+    let created = 0, skipped = 0;
+    for (const s of students) {
+      const exists = await StudentFee.findOne({ student: s._id, academicYear });
+      if (exists) { skipped++; continue; }
+      await StudentFee.create({
+        student: s._id, feeStructure: structure._id,
+        academicYear, totalAmount: structure.totalAmount, payments: [],
+      });
+      created++;
+    }
+    res.json({ success: true, message: `Done — ${created} initialized, ${skipped} already existed` });
+  } catch (err) {
+    res.status(500).json({ success: false, message: err.message });
   }
 });
 
-router.post('/payments', protect, authorize('admin', 'accountant'), async (req, res) => {
+// GET /fees/students?classId=&academicYear=&search=
+router.get('/students', protect, authorize('admin', 'accountant'), async (req, res) => {
   try {
-    const receiptNo = `RCP-${Date.now()}`;
-    const payment = await Payment.create({ ...req.body, receiptNo, collectedBy: req.user._id });
-    res.status(201).json({ success: true, message: 'Payment recorded', payment });
-  } catch (error) {
-    res.status(500).json({ success: false, message: error.message });
+    const { classId, academicYear = '2025-2026', search } = req.query;
+    let studentQuery = { isActive: true };
+    if (classId)     studentQuery.class = classId;
+    if (academicYear) studentQuery.academicYear = academicYear;
+
+    let students = await Student.find(studentQuery)
+      .populate('user', 'name email phone')
+      .populate('class', 'name section')
+      .sort({ admissionNo: 1 });
+
+    if (search) {
+      const q = search.toLowerCase();
+      students = students.filter(s =>
+        s.user?.name?.toLowerCase().includes(q) ||
+        s.admissionNo?.toLowerCase().includes(q)
+      );
+    }
+
+    const ids = students.map(s => s._id);
+    const fees = await StudentFee.find({ student: { $in: ids }, academicYear });
+    const feeMap = Object.fromEntries(fees.map(f => [f.student.toString(), f]));
+
+    const data = students.map(s => ({ student: s, fee: feeMap[s._id.toString()] || null }));
+    res.json({ success: true, data });
+  } catch (err) {
+    res.status(500).json({ success: false, message: err.message });
   }
 });
 
-// GET student fee summary
+// GET /fees/student/:studentId?academicYear=
 router.get('/student/:studentId', protect, async (req, res) => {
   try {
-    const payments = await Payment.find({ student: req.params.studentId }).sort({ createdAt: -1 });
-    const summary = {
-      totalPaid: payments.filter(p => p.status === 'paid').reduce((s, p) => s + p.paidAmount, 0),
-      totalPending: payments.filter(p => p.status === 'pending').reduce((s, p) => s + p.dueAmount, 0),
-      totalOverdue: payments.filter(p => p.status === 'overdue').reduce((s, p) => s + p.dueAmount, 0),
-    };
-    res.json({ success: true, payments, summary });
-  } catch (error) {
-    res.status(500).json({ success: false, message: error.message });
+    const { academicYear = '2025-2026' } = req.query;
+    const feeRecord = await StudentFee
+      .findOne({ student: req.params.studentId, academicYear })
+      .populate({ path: 'student', populate: { path: 'user', select: 'name email phone' } })
+      .populate({ path: 'payments.collectedBy', select: 'name' });
+    res.json({ success: true, feeRecord: feeRecord || null });
+  } catch (err) {
+    res.status(500).json({ success: false, message: err.message });
   }
 });
 
-// GET my fees (for student/parent)
+// POST /fees/students/:studentId/payment  — add one payment entry (any amount)
+router.post('/students/:studentId/payment', protect, authorize('admin', 'accountant'), async (req, res) => {
+  try {
+    const { amount, paymentMode = 'cash', transactionId, remarks, paymentDate, academicYear = '2025-2026' } = req.body;
+
+    if (!amount || Number(amount) <= 0)
+      return res.status(400).json({ success: false, message: 'Enter a valid amount' });
+
+    const feeRecord = await StudentFee.findOne({ student: req.params.studentId, academicYear });
+    if (!feeRecord)
+      return res.status(404).json({ success: false, message: 'Fee record not found. Initialize fees first.' });
+
+    const totalPaid = feeRecord.payments.reduce((s, p) => s + p.amount, 0);
+    if (totalPaid + Number(amount) > feeRecord.totalAmount)
+      return res.status(400).json({ success: false, message: `Payment exceeds remaining balance of ₹${feeRecord.totalAmount - totalPaid}` });
+
+    const receiptNo = `RCP-${Date.now()}`;
+    feeRecord.payments.push({
+      amount: Number(amount),
+      paymentDate: paymentDate ? new Date(paymentDate) : new Date(),
+      paymentMode,
+      receiptNo,
+      transactionId,
+      collectedBy: req.user._id,
+      remarks,
+    });
+    await feeRecord.save();
+
+    res.json({ success: true, message: 'Payment recorded', feeRecord, receiptNo });
+  } catch (err) {
+    res.status(500).json({ success: false, message: err.message });
+  }
+});
+
+// DELETE /fees/students/:studentId/payment/:paymentId  — remove a mis-entered payment
+router.delete('/students/:studentId/payment/:paymentId', protect, authorize('admin'), async (req, res) => {
+  try {
+    const { academicYear = '2025-2026' } = req.query;
+    const feeRecord = await StudentFee.findOne({ student: req.params.studentId, academicYear });
+    if (!feeRecord) return res.status(404).json({ success: false, message: 'Fee record not found' });
+
+    feeRecord.payments = feeRecord.payments.filter(p => p._id.toString() !== req.params.paymentId);
+    await feeRecord.save();
+    res.json({ success: true, message: 'Payment removed', feeRecord });
+  } catch (err) {
+    res.status(500).json({ success: false, message: err.message });
+  }
+});
+
+// GET /fees/my/fees  — student / parent own view
 router.get('/my/fees', protect, authorize('student', 'parent'), async (req, res) => {
   try {
     let studentIds = [];
@@ -75,33 +167,36 @@ router.get('/my/fees', protect, authorize('student', 'parent'), async (req, res)
     } else {
       studentIds = req.user.children || [];
     }
-    const payments = await Payment.find({ student: { $in: studentIds } })
-      .populate('student', 'admissionNo')
-      .sort({ createdAt: -1 });
-    res.json({ success: true, payments });
-  } catch (error) {
-    res.status(500).json({ success: false, message: error.message });
+    const feeRecords = await StudentFee.find({ student: { $in: studentIds } })
+      .populate({ path: 'student', populate: [
+        { path: 'user',  select: 'name' },
+        { path: 'class', select: 'name section' },
+      ]})
+      .sort({ academicYear: -1 });
+    res.json({ success: true, feeRecords });
+  } catch (err) {
+    res.status(500).json({ success: false, message: err.message });
   }
 });
 
-// GET financial summary
+// GET /fees/summary/stats?year=
 router.get('/summary/stats', protect, authorize('admin', 'accountant'), async (req, res) => {
   try {
-    const [totalPaid, totalPending, totalOverdue] = await Promise.all([
-      Payment.aggregate([{ $match: { status: 'paid' } }, { $group: { _id: null, total: { $sum: '$paidAmount' } } }]),
-      Payment.aggregate([{ $match: { status: 'pending' } }, { $group: { _id: null, total: { $sum: '$dueAmount' } } }]),
-      Payment.aggregate([{ $match: { status: 'overdue' } }, { $group: { _id: null, total: { $sum: '$dueAmount' } } }])
-    ]);
-    res.json({
-      success: true,
-      stats: {
-        totalPaid: totalPaid[0]?.total || 0,
-        totalPending: totalPending[0]?.total || 0,
-        totalOverdue: totalOverdue[0]?.total || 0
-      }
+    const { year = '2025-2026' } = req.query;
+    const records = await StudentFee.find({ academicYear: year });
+    let totalAmount = 0, totalPaid = 0;
+    records.forEach(r => {
+      totalAmount += r.totalAmount || 0;
+      totalPaid   += r.payments.reduce((s, p) => s + (p.amount || 0), 0);
     });
-  } catch (error) {
-    res.status(500).json({ success: false, message: error.message });
+    res.json({ success: true, stats: {
+      totalAmount,
+      totalPaid,
+      totalDue: Math.max(0, totalAmount - totalPaid),
+      totalStudents: records.length,
+    }});
+  } catch (err) {
+    res.status(500).json({ success: false, message: err.message });
   }
 });
 

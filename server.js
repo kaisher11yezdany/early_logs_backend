@@ -21,9 +21,11 @@ app.use(cors({
     const allowed =
       origin.endsWith('.vercel.app') ||
       origin.endsWith('.railway.app') ||
+      origin.endsWith('.amplifyapp.com') ||       // AWS Amplify
+      origin.endsWith('.cloudfront.net') ||        // AWS CloudFront
       origin === 'http://localhost:5173' ||
       origin === 'http://127.0.0.1:5173' ||
-      origin === process.env.FRONTEND_URL;
+      origin === process.env.FRONTEND_URL;         // custom domain via env
     if (allowed) return callback(null, true);
     callback(new Error(`CORS blocked: ${origin}`));
   },

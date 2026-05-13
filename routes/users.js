@@ -66,9 +66,37 @@ router.get('/:id', protect, authorize('admin'), async (req, res) => {
 router.put('/:id', protect, authorize('admin'), async (req, res) => {
   try {
     const { password, ...updateData } = req.body;
-    const user = await User.findByIdAndUpdate(req.params.id, updateData, { new: true, runValidators: true }).select('-password');
+    const user = await User.findById(req.params.id);
     if (!user) return res.status(404).json({ success: false, message: 'User not found' });
-    res.json({ success: true, message: 'User updated', user });
+    Object.assign(user, updateData);
+    if (password && password.length >= 6) user.password = password; // triggers pre-save hash
+    await user.save({ validateBeforeSave: false });
+    const out = user.toObject();
+    delete out.password;
+    res.json({ success: true, message: 'User updated', user: out });
+  } catch (error) {
+    res.status(500).json({ success: false, message: error.message });
+  }
+});
+
+// @route  PUT /api/users/:id/assign-children
+// Body: { studentIds: ['id1','id2',...] }
+router.put('/:id/assign-children', protect, authorize('admin'), async (req, res) => {
+  try {
+    const { studentIds = [] } = req.body;
+    const parent = await User.findById(req.params.id);
+    if (!parent) return res.status(404).json({ success: false, message: 'User not found' });
+    if (parent.role !== 'parent')
+      return res.status(400).json({ success: false, message: 'User is not a parent' });
+
+    parent.children = studentIds;
+    await parent.save({ validateBeforeSave: false });
+
+    const populated = await User.findById(parent._id)
+      .select('-password')
+      .populate({ path: 'children', populate: { path: 'user', select: 'name email' } });
+
+    res.json({ success: true, message: 'Children assigned successfully', user: populated });
   } catch (error) {
     res.status(500).json({ success: false, message: error.message });
   }
