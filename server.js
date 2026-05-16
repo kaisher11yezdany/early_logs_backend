@@ -18,14 +18,20 @@ app.use(cors({
   origin: (origin, callback) => {
     // Allow requests with no origin (mobile apps, curl, Postman)
     if (!origin) return callback(null, true);
+
+    // Support multiple frontend URLs via comma-separated FRONTEND_URLS env var
+    const extraUrls = (process.env.FRONTEND_URLS || process.env.FRONTEND_URL || '')
+      .split(',').map(u => u.trim()).filter(Boolean);
+
     const allowed =
       origin.endsWith('.vercel.app') ||
       origin.endsWith('.railway.app') ||
-      origin.endsWith('.amplifyapp.com') ||       // AWS Amplify
-      origin.endsWith('.cloudfront.net') ||        // AWS CloudFront
+      origin.endsWith('.amplifyapp.com') ||
+      origin.endsWith('.cloudfront.net') ||
       origin === 'http://localhost:5173' ||
       origin === 'http://127.0.0.1:5173' ||
-      origin === process.env.FRONTEND_URL;         // custom domain via env
+      extraUrls.includes(origin);
+
     if (allowed) return callback(null, true);
     callback(new Error(`CORS blocked: ${origin}`));
   },
