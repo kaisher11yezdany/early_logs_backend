@@ -120,10 +120,16 @@ router.post('/:id/uploads', protect, authorize('admin'), uploadFields, async (re
     const student = await Student.findById(req.params.id);
     if (!student) return res.status(404).json({ success: false, message: 'Student not found' });
 
-    const fields = ['studentAadhar', 'fatherAadhar', 'motherAadhar', 'guardianAadhar', 'transferCertificate'];
+    const docFields = ['studentAadhar', 'fatherAadhar', 'motherAadhar', 'guardianAadhar', 'transferCertificate'];
     const updates = {};
 
-    fields.forEach(field => {
+    // Handle profile photo — stored directly on student.photo
+    if (req.files?.photo?.[0]) {
+      const f = req.files.photo[0];
+      updates['photo'] = `/uploads/${f.filename}`;
+    }
+
+    docFields.forEach(field => {
       if (req.files?.[field]?.[0]) {
         const f = req.files[field][0];
         updates[`documentUploads.${field}`] = {

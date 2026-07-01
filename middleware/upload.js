@@ -31,6 +31,7 @@ const upload = multer({
 
 // Fields accepted for student document uploads
 const uploadFields = upload.fields([
+  { name: 'photo',               maxCount: 1 },
   { name: 'studentAadhar',       maxCount: 1 },
   { name: 'fatherAadhar',        maxCount: 1 },
   { name: 'motherAadhar',        maxCount: 1 },
