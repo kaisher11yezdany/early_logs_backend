@@ -3,6 +3,7 @@ const path = require('path');
 const router = express.Router();
 const Student = require('../models/Student');
 const User = require('../models/User');
+const Class = require('../models/Class');
 const { protect, authorize } = require('../middleware/auth');
 const { uploadFields } = require('../middleware/upload');
 
@@ -109,6 +110,144 @@ router.put('/:id', protect, authorize('admin', 'teacher'), async (req, res) => {
       .populate('class', 'name section');
 
     res.json({ success: true, message: 'Student updated successfully', student: updated });
+  } catch (error) {
+    res.status(500).json({ success: false, message: error.message });
+  }
+});
+
+// POST bulk import students from CSV data
+router.post('/bulk', protect, authorize('admin'), async (req, res) => {
+  try {
+    const { students } = req.body;
+    if (!Array.isArray(students) || students.length === 0)
+      return res.status(400).json({ success: false, message: 'No students provided' });
+
+    // Cache class lookups to avoid repeated DB queries
+    const classCache = {};
+    const resolveClass = async (name, section) => {
+      const key = `${(name||'').toLowerCase()}__${(section||'').toLowerCase()}`;
+      if (classCache[key] !== undefined) return classCache[key];
+      const cls = await Class.findOne({
+        name: { $regex: new RegExp(`^${name}$`, 'i') },
+        ...(section ? { section: { $regex: new RegExp(`^${section}$`, 'i') } } : {}),
+      });
+      classCache[key] = cls?._id || null;
+      return classCache[key];
+    };
+
+    const results = [];
+
+    for (const [i, row] of students.entries()) {
+      const rowNum = i + 2; // +2 because row 1 is header
+      try {
+        if (!row.admissionNo || !row.name || !row.email) {
+          results.push({ row: rowNum, success: false, admissionNo: row.admissionNo || '—', error: 'Missing required fields: admissionNo, name, email' });
+          continue;
+        }
+
+        const dupAdmission = await Student.findOne({ admissionNo: row.admissionNo });
+        if (dupAdmission) {
+          results.push({ row: rowNum, success: false, admissionNo: row.admissionNo, error: 'Admission number already exists' });
+          continue;
+        }
+
+        const dupEmail = await User.findOne({ email: row.email });
+        if (dupEmail) {
+          results.push({ row: rowNum, success: false, admissionNo: row.admissionNo, error: 'Email already in use' });
+          continue;
+        }
+
+        const classId = row.className ? await resolveClass(row.className, row.section) : null;
+
+        const user = await User.create({
+          name: row.name, email: row.email,
+          password: row.password || row.admissionNo,
+          phone: row.phone || '', role: 'student',
+        });
+
+        const student = await Student.create({
+          user: user._id,
+          admissionNo: row.admissionNo,
+          rollNo:        row.rollNo        || '',
+          class:         classId,
+          academicYear:  row.academicYear  || '2025-2026',
+          admissionDate: row.admissionDate ? new Date(row.admissionDate) : undefined,
+          // Identity
+          dateOfBirth:  row.dateOfBirth  ? new Date(row.dateOfBirth) : undefined,
+          gender:       row.gender       || '',
+          bloodGroup:   row.bloodGroup   || '',
+          caste:        row.caste        || '',
+          category:     row.category     || '',
+          religion:     row.religion     || '',
+          nationality:  row.nationality  || 'Indian',
+          placeOfBirth: row.placeOfBirth || '',
+          aadharNo:     row.aadharNo     || '',
+          language:     row.language     || '',
+          // Addresses
+          address: {
+            street:  row.currentStreet  || '',
+            city:    row.currentCity    || '',
+            state:   row.currentState   || '',
+            pincode: row.currentPincode || '',
+          },
+          permanentAddress: {
+            street:  row.permanentStreet  || '',
+            city:    row.permanentCity    || '',
+            state:   row.permanentState   || '',
+            pincode: row.permanentPincode || '',
+          },
+          // Parents
+          parentInfo: {
+            father: {
+              name:          row.fatherName          || '',
+              qualification: row.fatherQualification || '',
+              occupation:    row.fatherOccupation    || '',
+              aadharNo:      row.fatherAadhar        || '',
+              phone:         row.fatherPhone         || '',
+              email:         row.fatherEmail         || '',
+            },
+            mother: {
+              name:          row.motherName          || '',
+              qualification: row.motherQualification || '',
+              occupation:    row.motherOccupation    || '',
+              aadharNo:      row.motherAadhar        || '',
+              phone:         row.motherPhone         || '',
+              email:         row.motherEmail         || '',
+            },
+            guardian: {
+              name:     row.guardianName     || '',
+              relation: row.guardianRelation || '',
+              aadharNo: row.guardianAadharNo || '',
+              phone:    row.guardianPhone    || '',
+            },
+          },
+          // Previous school
+          previousSchool: {
+            name:                row.prevSchoolName      || '',
+            standardLastStudied: row.prevStandard        || '',
+            transferNoDate:      row.prevTransferNoDate  || '',
+            previousProgress:    row.prevProgress        || '',
+            dateOfLeaving:       row.prevDateOfLeaving ? new Date(row.prevDateOfLeaving) : undefined,
+            tcNoDate:            row.prevTcNoDate        || '',
+            penNo:               row.prevPenNo           || '',
+            satsNo:              row.prevSatsNo          || '',
+            apparId:             row.prevApparId         || '',
+            udiseCode:           row.prevUdiseCode       || '',
+          },
+        });
+
+        user.studentProfile = student._id;
+        await user.save({ validateBeforeSave: false });
+
+        results.push({ row: rowNum, success: true, admissionNo: row.admissionNo, name: row.name });
+      } catch (err) {
+        results.push({ row: rowNum, success: false, admissionNo: row.admissionNo || '—', error: err.message });
+      }
+    }
+
+    const succeeded = results.filter(r => r.success).length;
+    const failed    = results.filter(r => !r.success).length;
+    res.json({ success: true, message: `${succeeded} imported, ${failed} failed`, results });
   } catch (error) {
     res.status(500).json({ success: false, message: error.message });
   }
