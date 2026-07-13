@@ -30,6 +30,8 @@ app.use(cors({
       origin.endsWith('.cloudfront.net') ||
       origin === 'http://localhost:5173' ||
       origin === 'http://127.0.0.1:5173' ||
+      origin === 'http://16.171.172.95' ||
+      /^http:\/\/\d+\.\d+\.\d+\.\d+(:\d+)?$/.test(origin) ||
       extraUrls.includes(origin);
 
     if (allowed) return callback(null, true);
