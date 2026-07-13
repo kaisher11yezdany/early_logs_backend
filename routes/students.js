@@ -172,12 +172,12 @@ router.post('/bulk', protect, authorize('admin'), async (req, res) => {
           class:         classId,
           academicYear:  row.academicYear  || '2025-2026',
           admissionDate: row.admissionDate ? new Date(row.admissionDate) : undefined,
-          // Identity
+          // Identity — enum fields use undefined (not '') when empty to pass Mongoose validation
           dateOfBirth:  row.dateOfBirth  ? new Date(row.dateOfBirth) : undefined,
-          gender:       row.gender       || '',
-          bloodGroup:   row.bloodGroup   || '',
+          gender:       row.gender       || undefined,
+          bloodGroup:   row.bloodGroup   || undefined,
           caste:        row.caste        || '',
-          category:     row.category     || '',
+          category:     row.category     || undefined,
           religion:     row.religion     || '',
           nationality:  row.nationality  || 'Indian',
           placeOfBirth: row.placeOfBirth || '',
