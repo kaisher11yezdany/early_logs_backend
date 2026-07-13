@@ -10,8 +10,8 @@ const { uploadFields } = require('../middleware/upload');
 // GET all students
 router.get('/', protect, async (req, res) => {
   try {
-    const { classId, academicYear, search, page = 1, limit = 20 } = req.query;
-    let query = { isActive: true };
+    const { classId, academicYear, search, page = 1, limit = 20, showInactive } = req.query;
+    let query = { isActive: showInactive === 'true' ? false : true };
     if (classId) query.class = classId;
     if (academicYear) query.academicYear = academicYear;
     if (search) {
@@ -115,6 +115,37 @@ router.put('/:id', protect, authorize('admin', 'teacher'), async (req, res) => {
   }
 });
 
+// ── Bulk import helpers ───────────────────────────────────────────────────────
+
+// Parse dates in DD-MM-YYYY, DD/MM/YYYY, YYYY-MM-DD, or any JS-parseable format
+function parseDate(val) {
+  if (!val || !val.trim()) return undefined;
+  const s = val.trim();
+  // DD-MM-YYYY or DD/MM/YYYY
+  const dmY = s.match(/^(\d{1,2})[-\/](\d{1,2})[-\/](\d{4})$/);
+  if (dmY) {
+    const d = new Date(`${dmY[3]}-${dmY[2].padStart(2,'0')}-${dmY[1].padStart(2,'0')}`);
+    return isNaN(d) ? undefined : d;
+  }
+  const d = new Date(s);
+  return isNaN(d) ? undefined : d;
+}
+
+// Normalise gender to lowercase enum value
+const GENDER_MAP = { male: 'male', female: 'female', other: 'other', m: 'male', f: 'female' };
+function normaliseGender(val) {
+  return GENDER_MAP[(val || '').trim().toLowerCase()] || undefined;
+}
+
+// Extract category — strips leading digits/dashes (e.g. "4-OBC" → "OBC")
+const CATEGORY_VALUES = ['General', 'OBC', 'SC', 'ST', 'Other'];
+function normaliseCategory(val) {
+  if (!val) return undefined;
+  const clean = (val.trim().replace(/^\d+[-.\s]*/, '')).trim();
+  const match = CATEGORY_VALUES.find(c => c.toLowerCase() === clean.toLowerCase());
+  return match || undefined;
+}
+
 // POST bulk import students from CSV data
 router.post('/bulk', protect, authorize('admin'), async (req, res) => {
   try {
@@ -145,17 +176,33 @@ router.post('/bulk', protect, authorize('admin'), async (req, res) => {
           continue;
         }
 
-        const dupAdmission = await Student.findOne({ admissionNo: row.admissionNo });
+        const dupAdmission = await Student.findOne({ admissionNo: row.admissionNo, isActive: true });
         if (dupAdmission) {
           results.push({ row: rowNum, success: false, admissionNo: row.admissionNo, error: 'Admission number already exists' });
           continue;
         }
 
-        const dupEmail = await User.findOne({ email: row.email });
+        const dupEmail = await User.findOne({ email: row.email, isActive: true });
         if (dupEmail) {
-          results.push({ row: rowNum, success: false, admissionNo: row.admissionNo, error: 'Email already in use' });
-          continue;
+          // Allow re-import if the user is a student with no active student profile (orphaned user)
+          if (dupEmail.role === 'student') {
+            const activeProfile = await Student.findOne({ user: dupEmail._id, isActive: true });
+            if (activeProfile) {
+              results.push({ row: rowNum, success: false, admissionNo: row.admissionNo, error: `Email already in use: ${row.email}` });
+              continue;
+            }
+            // Orphaned student user — clean it up so we can re-create
+            await User.deleteOne({ _id: dupEmail._id });
+          } else {
+            results.push({ row: rowNum, success: false, admissionNo: row.admissionNo, error: `Email belongs to an existing ${dupEmail.role} account` });
+            continue;
+          }
         }
+
+        // Remove any soft-deleted student/user with same admissionNo or email before re-creating
+        const oldStudent = await Student.findOne({ admissionNo: row.admissionNo, isActive: false });
+        if (oldStudent) await Student.findByIdAndDelete(oldStudent._id);
+        await User.deleteOne({ email: row.email, isActive: false });
 
         const classId = row.className ? await resolveClass(row.className, row.section) : null;
 
@@ -171,13 +218,13 @@ router.post('/bulk', protect, authorize('admin'), async (req, res) => {
           rollNo:        row.rollNo        || '',
           class:         classId,
           academicYear:  row.academicYear  || '2025-2026',
-          admissionDate: row.admissionDate ? new Date(row.admissionDate) : undefined,
-          // Identity — enum fields use undefined (not '') when empty to pass Mongoose validation
-          dateOfBirth:  row.dateOfBirth  ? new Date(row.dateOfBirth) : undefined,
-          gender:       row.gender       || undefined,
+          admissionDate: parseDate(row.admissionDate),
+          // Identity — use normalisers so enum values and dates from any format are accepted
+          dateOfBirth:  parseDate(row.dateOfBirth),
+          gender:       normaliseGender(row.gender),
           bloodGroup:   row.bloodGroup   || undefined,
           caste:        row.caste        || '',
-          category:     row.category     || undefined,
+          category:     normaliseCategory(row.category),
           religion:     row.religion     || '',
           nationality:  row.nationality  || 'Indian',
           placeOfBirth: row.placeOfBirth || '',
@@ -227,7 +274,7 @@ router.post('/bulk', protect, authorize('admin'), async (req, res) => {
             standardLastStudied: row.prevStandard        || '',
             transferNoDate:      row.prevTransferNoDate  || '',
             previousProgress:    row.prevProgress        || '',
-            dateOfLeaving:       row.prevDateOfLeaving ? new Date(row.prevDateOfLeaving) : undefined,
+            dateOfLeaving:       parseDate(row.prevDateOfLeaving),
             tcNoDate:            row.prevTcNoDate        || '',
             penNo:               row.prevPenNo           || '',
             satsNo:              row.prevSatsNo          || '',
@@ -295,11 +342,9 @@ router.delete('/:id', protect, authorize('admin'), async (req, res) => {
     const student = await Student.findById(req.params.id);
     if (!student) return res.status(404).json({ success: false, message: 'Student not found' });
 
-    // Soft-delete the user account so historical records (attendance, marks) remain intact
+    // Soft-delete both the student profile and the linked user account
+    await Student.findByIdAndUpdate(req.params.id, { isActive: false });
     await User.findByIdAndUpdate(student.user, { isActive: false });
-
-    // Hard-delete the student profile
-    await Student.findByIdAndDelete(req.params.id);
 
     res.json({ success: true, message: 'Student deleted successfully' });
   } catch (error) {

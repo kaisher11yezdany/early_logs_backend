@@ -20,7 +20,7 @@ const studentSchema = new mongoose.Schema({
   admissionDay:  { type: String },
 
   // ── Class ─────────────────────────────────────────────────────────────────
-  class:   { type: mongoose.Schema.Types.ObjectId, ref: 'Class', required: true },
+  class:   { type: mongoose.Schema.Types.ObjectId, ref: 'Class' },
   section: { type: String },
 
   // ── Student Identity ──────────────────────────────────────────────────────
