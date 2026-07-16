@@ -192,50 +192,17 @@ router.post('/bulk', protect, authorize('admin'), async (req, res) => {
           continue;
         }
 
-        const dupAdmission = await Student.findOne({ admissionNo: row.admissionNo, isActive: true });
-        if (dupAdmission) {
-          results.push({ row: rowNum, success: false, admissionNo: row.admissionNo, error: 'Admission number already exists' });
-          continue;
-        }
+        const classId = (row.className || row.section)
+          ? await resolveClass(row.className || row.section, row.className ? row.section : '')
+          : null;
 
-        const dupEmail = await User.findOne({ email: row.email, isActive: true });
-        if (dupEmail) {
-          // Allow re-import if the user is a student with no active student profile (orphaned user)
-          if (dupEmail.role === 'student') {
-            const activeProfile = await Student.findOne({ user: dupEmail._id, isActive: true });
-            if (activeProfile) {
-              results.push({ row: rowNum, success: false, admissionNo: row.admissionNo, error: `Email already in use: ${row.email}` });
-              continue;
-            }
-            // Orphaned student user — clean it up so we can re-create
-            await User.deleteOne({ _id: dupEmail._id });
-          } else {
-            results.push({ row: rowNum, success: false, admissionNo: row.admissionNo, error: `Email belongs to an existing ${dupEmail.role} account` });
-            continue;
-          }
-        }
-
-        // Remove any soft-deleted student/user with same admissionNo or email before re-creating
-        const oldStudent = await Student.findOne({ admissionNo: row.admissionNo, isActive: false });
-        if (oldStudent) await Student.findByIdAndDelete(oldStudent._id);
-        await User.deleteOne({ email: row.email, isActive: false });
-
-        const classId = row.className ? await resolveClass(row.className, row.section) : null;
-
-        const user = await User.create({
-          name: row.name, email: row.email,
-          password: row.password || row.admissionNo,
-          phone: row.phone || '', role: 'student',
-        });
-
-        const student = await Student.create({
-          user: user._id,
-          admissionNo: row.admissionNo,
-          rollNo:        row.rollNo        || '',
-          class:         classId,
-          academicYear:  row.academicYear  || '2025-2026',
+        // Build the full student field set (shared by create and update)
+        const studentFields = {
+          admissionNo:  row.admissionNo,
+          rollNo:       row.rollNo       || '',
+          class:        classId,
+          academicYear: row.academicYear || '2025-2026',
           admissionDate: parseDate(row.admissionDate),
-          // Identity — use normalisers so enum values and dates from any format are accepted
           dateOfBirth:  parseDate(row.dateOfBirth),
           gender:       normaliseGender(row.gender),
           bloodGroup:   row.bloodGroup   || undefined,
@@ -246,7 +213,6 @@ router.post('/bulk', protect, authorize('admin'), async (req, res) => {
           placeOfBirth: row.placeOfBirth || '',
           aadharNo:     row.aadharNo     || '',
           language:     row.language     || '',
-          // Addresses
           address: {
             street:  row.currentStreet  || '',
             city:    row.currentCity    || '',
@@ -259,7 +225,6 @@ router.post('/bulk', protect, authorize('admin'), async (req, res) => {
             state:   row.permanentState   || '',
             pincode: row.permanentPincode || '',
           },
-          // Parents
           parentInfo: {
             father: {
               name:          row.fatherName          || '',
@@ -284,33 +249,69 @@ router.post('/bulk', protect, authorize('admin'), async (req, res) => {
               phone:    row.guardianPhone    || '',
             },
           },
-          // Previous school
           previousSchool: {
-            name:                row.prevSchoolName      || '',
-            standardLastStudied: row.prevStandard        || '',
-            transferNoDate:      row.prevTransferNoDate  || '',
-            previousProgress:    row.prevProgress        || '',
+            name:                row.prevSchoolName     || '',
+            standardLastStudied: row.prevStandard       || '',
+            transferNoDate:      row.prevTransferNoDate || '',
+            previousProgress:    row.prevProgress       || '',
             dateOfLeaving:       parseDate(row.prevDateOfLeaving),
-            tcNoDate:            row.prevTcNoDate        || '',
-            penNo:               row.prevPenNo           || '',
-            satsNo:              row.prevSatsNo          || '',
-            apparId:             row.prevApparId         || '',
-            udiseCode:           row.prevUdiseCode       || '',
+            tcNoDate:            row.prevTcNoDate       || '',
+            penNo:               row.prevPenNo          || '',
+            satsNo:              row.prevSatsNo         || '',
+            apparId:             row.prevApparId        || '',
+            udiseCode:           row.prevUdiseCode      || '',
           },
-        });
+        };
 
-        user.studentProfile = student._id;
-        await user.save({ validateBeforeSave: false });
+        // ── Upsert: find existing student by admissionNo, then by email ─────
+        let existingStudent = await Student.findOne({ admissionNo: row.admissionNo });
+        let existingUser    = null;
 
-        results.push({ row: rowNum, success: true, admissionNo: row.admissionNo, name: row.name });
+        if (existingStudent) {
+          existingUser = await User.findById(existingStudent.user);
+        } else {
+          existingUser = await User.findOne({ email: row.email });
+          if (existingUser) {
+            if (existingUser.role !== 'student') {
+              results.push({ row: rowNum, success: false, admissionNo: row.admissionNo, error: `Email belongs to an existing ${existingUser.role} account` });
+              continue;
+            }
+            existingStudent = await Student.findOne({ user: existingUser._id });
+          }
+        }
+
+        if (existingStudent) {
+          // ── UPDATE existing student ────────────────────────────────────────
+          if (existingUser) {
+            existingUser.name  = row.name;
+            existingUser.email = row.email;
+            existingUser.phone = row.phone || existingUser.phone;
+            if (row.password) existingUser.password = row.password;
+            await existingUser.save();
+          }
+          await Student.findByIdAndUpdate(existingStudent._id, { $set: studentFields });
+          results.push({ row: rowNum, success: true, updated: true, admissionNo: row.admissionNo, name: row.name });
+        } else {
+          // ── CREATE new student ─────────────────────────────────────────────
+          const user = await User.create({
+            name: row.name, email: row.email,
+            password: row.password || row.admissionNo,
+            phone: row.phone || '', role: 'student',
+          });
+          const student = await Student.create({ user: user._id, ...studentFields });
+          user.studentProfile = student._id;
+          await user.save({ validateBeforeSave: false });
+          results.push({ row: rowNum, success: true, updated: false, admissionNo: row.admissionNo, name: row.name });
+        }
       } catch (err) {
         results.push({ row: rowNum, success: false, admissionNo: row.admissionNo || '—', error: err.message });
       }
     }
 
-    const succeeded = results.filter(r => r.success).length;
-    const failed    = results.filter(r => !r.success).length;
-    res.json({ success: true, message: `${succeeded} imported, ${failed} failed`, results });
+    const created = results.filter(r => r.success && !r.updated).length;
+    const updated = results.filter(r => r.success &&  r.updated).length;
+    const failed  = results.filter(r => !r.success).length;
+    res.json({ success: true, message: `${created} created, ${updated} updated, ${failed} failed`, results });
   } catch (error) {
     res.status(500).json({ success: false, message: error.message });
   }
