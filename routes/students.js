@@ -10,13 +10,18 @@ const { uploadFields } = require('../middleware/upload');
 // GET all students
 router.get('/', protect, async (req, res) => {
   try {
-    const { classId, academicYear, search, page = 1, limit = 20, showInactive } = req.query;
+    const { classId, academicYear, search, page = 1, limit = 20, showInactive, fromDate, toDate } = req.query;
     let query = { isActive: showInactive === 'true' ? false : true };
     if (classId) query.class = classId;
     if (academicYear) query.academicYear = academicYear;
     if (search) {
       const users = await User.find({ name: { $regex: search, $options: 'i' } }).select('_id');
       query.user = { $in: users.map(u => u._id) };
+    }
+    if (fromDate || toDate) {
+      query.createdAt = {};
+      if (fromDate) query.createdAt.$gte = new Date(fromDate);
+      if (toDate) { const d = new Date(toDate); d.setHours(23,59,59,999); query.createdAt.$lte = d; }
     }
     const total = await Student.countDocuments(query);
     const students = await Student.find(query)
