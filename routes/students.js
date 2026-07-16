@@ -163,10 +163,21 @@ router.post('/bulk', protect, authorize('admin'), async (req, res) => {
     const resolveClass = async (name, section) => {
       const key = `${(name||'').toLowerCase()}__${(section||'').toLowerCase()}`;
       if (classCache[key] !== undefined) return classCache[key];
-      const cls = await Class.findOne({
+      let cls = await Class.findOne({
         name: { $regex: new RegExp(`^${name}$`, 'i') },
         ...(section ? { section: { $regex: new RegExp(`^${section}$`, 'i') } } : {}),
       });
+      // Fallback: if no match and name looks like "G1-A", try splitting on last "-"
+      // so name="G1" section="A" — handles CSVs where className column holds the full identifier
+      if (!cls && !section && name.includes('-')) {
+        const lastDash = name.lastIndexOf('-');
+        const namePart = name.substring(0, lastDash);
+        const secPart  = name.substring(lastDash + 1);
+        cls = await Class.findOne({
+          name:    { $regex: new RegExp(`^${namePart}$`, 'i') },
+          section: { $regex: new RegExp(`^${secPart}$`,  'i') },
+        });
+      }
       classCache[key] = cls?._id || null;
       return classCache[key];
     };
