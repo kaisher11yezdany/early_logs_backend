@@ -187,10 +187,12 @@ router.post('/bulk', protect, authorize('admin'), async (req, res) => {
     for (const [i, row] of students.entries()) {
       const rowNum = i + 2; // +2 because row 1 is header
       try {
-        if (!row.admissionNo || !row.name || !row.email) {
-          results.push({ row: rowNum, success: false, admissionNo: row.admissionNo || '—', error: 'Missing required fields: admissionNo, name, email' });
+        if (!row.admissionNo || !row.name) {
+          results.push({ row: rowNum, success: false, admissionNo: row.admissionNo || '—', error: 'Missing required fields: admissionNo, name' });
           continue;
         }
+        // Use provided email or generate a unique placeholder so the User record stays valid
+        if (!row.email) row.email = `${row.admissionNo.toLowerCase().replace(/\s+/g, '')}@noemail.school`;
 
         const classId = (row.className || row.section)
           ? await resolveClass(row.className || row.section, row.className ? row.section : '')
